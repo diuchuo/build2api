@@ -1129,77 +1129,85 @@ class RequestHandler {
     }
   }
 
-  // [新增] 动态获取模型列表的处理函数
-  async processModelListRequest(req, res) {
-    const requestId = this._generateRequestId();
-    this.logger.info(`[Adapter] 收到获取模型列表请求，正在转发至Google... (Request ID: ${requestId})`);
+// [修改] 动态获取模型列表：改为复用原生请求构建逻辑，去除硬编码的 pageSize
+async processModelListRequest(req, res) {
+  const requestId = this._generateRequestId();
+  
+  // [关键修正] 使用 _buildProxyRequest 来构建基础请求对象
+  // 这样会保留客户端原始的 headers 和 query 参数（如果客户端没传 pageSize，则默认拉取 50 个，和原生一致）
+  const proxyRequest = this._buildProxyRequest(req, requestId);
+
+  // 针对模型列表请求进行特定覆盖
+  proxyRequest.path = "/v1beta/models"; // 强制指向 Google 模型 API
+  proxyRequest.method = "GET";          // 确保方法为 GET
+  proxyRequest.body = null;             // GET 请求清空 Body
+  proxyRequest.is_generative = false;
+  proxyRequest.streaming_mode = "fake";
+  proxyRequest.client_wants_stream = false;
+  
+  // [注意] 这里删除了 query_params: { pageSize: 1000 } 的硬编码
+  // 现在它完全依赖 req.query，实现了与 Gemini 原生格式一致的请求行为
+
+  this.logger.info(`[Adapter] 收到获取模型列表请求，正在转发至Google... (Request ID: ${requestId})`);
+  
+  const messageQueue = this.connectionRegistry.createMessageQueue(requestId);
+
+  try {
+    this._forwardRequest(proxyRequest);
     
-    const proxyRequest = {
-      path: `/v1beta/models`,
-      method: "GET",
-      headers: {}, 
-      query_params: { pageSize: 1000 }, // 尝试获取所有模型
-      body: null,
-      request_id: requestId,
-      is_generative: false,
-      streaming_mode: "fake", 
-      client_wants_stream: false
-    };
-
-    const messageQueue = this.connectionRegistry.createMessageQueue(requestId);
-
-    try {
-      this._forwardRequest(proxyRequest);
-      
-      // 等待响应头
-      const headerMessage = await messageQueue.dequeue();
-      if (headerMessage.event_type === "error") {
-        throw new Error(headerMessage.message || "Upstream error");
-      }
-
-      // 等待响应体
-      let fullBody = "";
-      while (true) {
-        const message = await messageQueue.dequeue(60000); // 60秒超时
-        if (message.type === "STREAM_END") break;
-        if (message.event_type === "chunk" && message.data) {
-          fullBody += message.data;
-        }
-      }
-
-      // 解析 Google 响应并转换为 OpenAI 格式
-      const googleResponse = JSON.parse(fullBody);
-      const googleModels = googleResponse.models || [];
-      
-      const openaiModels = googleModels.map(model => {
-        // Google 返回的 name 格式如 "models/gemini-pro"
-        // OpenAI 格式通常只需要 "gemini-pro"
-        const id = model.name.replace("models/", "");
-        return {
-          id: id,
-          object: "model",
-          created: Math.floor(Date.now() / 1000),
-          owned_by: "google",
-          permission: [],
-          root: id,
-          parent: null
-        };
-      });
-
-      res.status(200).json({
-        object: "list",
-        data: openaiModels
-      });
-      
-      this.logger.info(`[Adapter] 成功获取并返回了 ${openaiModels.length} 个模型。`);
-
-    } catch (error) {
-      this.logger.error(`[Adapter] 获取模型列表失败: ${error.message}`);
-      this._sendErrorResponse(res, 500, "Failed to fetch model list.");
-    } finally {
-      this.connectionRegistry.removeMessageQueue(requestId);
+    // 1. 等待响应头
+    const headerMessage = await messageQueue.dequeue();
+    if (headerMessage.event_type === "error") {
+      throw new Error(headerMessage.message || "Upstream error");
     }
+
+    // 2. 循环接收数据直到流结束
+    let fullBody = "";
+    while (true) {
+      const message = await messageQueue.dequeue(60000); // 60秒超时
+      if (message.type === "STREAM_END") break;
+      if (message.event_type === "chunk" && message.data) {
+        fullBody += message.data;
+      }
+    }
+
+    // 3. 响应格式转换：Google JSON -> OpenAI JSON
+    let googleModels = [];
+    try {
+      const googleResponse = JSON.parse(fullBody);
+      googleModels = googleResponse.models || [];
+    } catch (e) {
+      this.logger.warn(`[Adapter] 解析模型列表JSON失败: ${e.message}`);
+    }
+    
+    const openaiModels = googleModels.map(model => {
+      // Google 格式: "models/gemini-pro" -> OpenAI 格式: "gemini-pro"
+      const id = model.name.replace("models/", "");
+      return {
+        id: id,
+        object: "model",
+        created: Math.floor(Date.now() / 1000),
+        owned_by: "google",
+        permission: [],
+        root: id,
+        parent: null
+      };
+    });
+
+    res.status(200).json({
+      object: "list",
+      data: openaiModels
+    });
+    
+    this.logger.info(`[Adapter] 成功获取并返回了 ${openaiModels.length} 个模型 (与原生请求保持一致)。`);
+
+  } catch (error) {
+    this.logger.error(`[Adapter] 获取模型列表失败: ${error.message}`);
+    this._sendErrorResponse(res, 500, "Failed to fetch model list.");
+  } finally {
+    this.connectionRegistry.removeMessageQueue(requestId);
   }
+}
 
   _cancelBrowserRequest(requestId) {
     const connection = this.connectionRegistry.getFirstConnection();
