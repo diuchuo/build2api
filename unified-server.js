@@ -2607,7 +2607,7 @@ class ProxyServerSystem extends EventEmitter {
         </div>
     </div>
 
-<script>
+    <script>
         let isUpdating = false;
 
         function showToast(msg) {
@@ -2667,8 +2667,8 @@ class ProxyServerSystem extends EventEmitter {
 
         async function switchAccount() {
             const idx = document.getElementById('accountSelector').value;
-            // 下面这一行是修正后的代码：
-            if(!confirm(\`确定切换到账号 #\${idx} 吗？这会重置当前浏览器会话。\``)) return;
+            // 使用单引号拼接字符串，彻底避免反引号冲突
+            if(!confirm('确定切换到账号 #' + idx + ' 吗？这会重置当前浏览器会话。')) return;
             
             showToast('正在切换账号...');
             try {
@@ -2707,7 +2707,7 @@ class ProxyServerSystem extends EventEmitter {
 
                 // Account Stats
                 document.getElementById('currentAccountBadge').textContent = '#' + s.currentAuthIndex;
-                document.getElementById('usageStats').textContent = \`使用: \${s.usageCount} | 失败: \${s.failureCount}\`;
+                document.getElementById('usageStats').textContent = '使用: ' + s.usageCount + ' | 失败: ' + s.failureCount;
 
                 // Account Selector
                 const selector = document.getElementById('accountSelector');
@@ -2716,7 +2716,8 @@ class ProxyServerSystem extends EventEmitter {
                 s.accountDetails.forEach(acc => {
                     const opt = document.createElement('option');
                     opt.value = acc.index;
-                    opt.textContent = \`#\${acc.index} - \${acc.name}\`;
+                    // 使用单引号拼接，避免反引号冲突
+                    opt.textContent = '#' + acc.index + ' - ' + acc.name;
                     if(acc.index == s.currentAuthIndex) opt.textContent += ' (当前)';
                     selector.appendChild(opt);
                 });
