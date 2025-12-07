@@ -15,32 +15,44 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # ==========================================
-# [交互 1] 强制设置 API Key (必填)
+# [交互 1] 检查或设置 API Key (必填)
 # ==========================================
 echo ""
 echo "----------------------------------------------------"
-echo "🔑 步骤 1/2: 配置 API Key (必须设置)"
+echo "🔑 步骤 1/2: 检查 API Key 配置"
 echo "----------------------------------------------------"
 
-USER_API_KEY=""
-# 循环直到用户输入有效内容
-while [ -z "$USER_API_KEY" ]; do
-    read -p "请输入 API Key (不能为空): " USER_API_KEY
-    USER_API_KEY=$(echo "$USER_API_KEY" | xargs) # 去除前后空格
+# 1. 尝试读取现有的 KEY (grep查找 -> cut取值 -> xargs去空格)
+CURRENT_API_KEY=$(grep "^API_KEYS=" "$ENV_FILE" | cut -d'=' -f2- | xargs)
 
-    if [ -z "$USER_API_KEY" ]; then
-        echo "❌ 错误: API Key 不能为空，请重新输入！"
-        echo ""
-    fi
-done
-
-# 写入配置到 app.env
-if grep -q "^API_KEYS=" "$ENV_FILE"; then
-    sed -i "s|^API_KEYS=.*|API_KEYS=$USER_API_KEY|" "$ENV_FILE"
+if [ -n "$CURRENT_API_KEY" ]; then
+    # --- 情况 A: 配置文件里已经有值了 ---
+    echo "✅ 检测到 app.env 中已配置 API Key，跳过输入。"
+    echo "   (如需修改，请手动编辑 app.env 或清空该行后重新运行脚本)"
 else
-    echo -e "\nAPI_KEYS=$USER_API_KEY" >> "$ENV_FILE"
+    # --- 情况 B: 配置文件里没有值，强制交互输入 ---
+    echo "⚠️  未检测到有效的 API Key，请输入："
+    
+    USER_API_KEY=""
+    # 循环直到用户输入有效内容
+    while [ -z "$USER_API_KEY" ]; do
+        read -p "👉 请输入 API Key (不能为空): " USER_API_KEY
+        USER_API_KEY=$(echo "$USER_API_KEY" | xargs) # 去除前后空格
+
+        if [ -z "$USER_API_KEY" ]; then
+            echo "❌ 错误: API Key 不能为空，请重新输入！"
+            echo ""
+        fi
+    done
+
+    # 写入配置到 app.env
+    if grep -q "^API_KEYS=" "$ENV_FILE"; then
+        sed -i "s|^API_KEYS=.*|API_KEYS=$USER_API_KEY|" "$ENV_FILE"
+    else
+        echo -e "\nAPI_KEYS=$USER_API_KEY" >> "$ENV_FILE"
+    fi
+    echo "✅ API Key 已保存。"
 fi
-echo "✅ API Key 已保存。"
 
 
 # ==========================================
