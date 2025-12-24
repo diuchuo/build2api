@@ -519,91 +519,139 @@ class BrowserManager {
     this._startBackgroundWakeup();
   }
 
-  // ===================================================================================
-  // [修改] 后台常驻唤醒守护 (V14 正式版 - 精简日志 + 点击统计)
-  // ===================================================================================
-  async _startBackgroundWakeup() {
-    // 1. 初始缓冲
-    await new Promise(r => setTimeout(r, 2000));
-    
-    if (!this.page || this.page.isClosed()) return;
-
-    this.logger.info('[Browser] (后台任务) 唤醒守护进程已启动');
-
-    // 2. 无限循环守护
-    while (this.page && !this.page.isClosed()) {
-        try {
-            // --- A. 顺手清理干扰 (Got it) ---
-            try {
-                const gotIt = this.page.locator('button:has-text("Got it")').first();
-                if (await gotIt.isVisible({ timeout: 50 })) await gotIt.click({ force: true });
-                await this.page.evaluate(() => document.querySelectorAll('.cdk-overlay-backdrop').forEach(el => el.remove()));
-            } catch (e) {}
-
-            // --- B. 核心查找逻辑 (基于 CSS 类名和内容指纹) ---
-            // 锁定 interaction-modal 内部的段落，且必须包含 rocket_launch 图标代码和 Launch 文字
-            const targetElement = this.page.locator('.interaction-modal p')
-                .filter({ hasText: 'rocket_launch' }) 
-                .filter({ hasText: /Launch/i })       
-                .first();
-
-            // 检测是否存在且可见
-            if (await targetElement.isVisible({ timeout: 500 })) {
-                
-                // 获取弹窗文本用于记录
-                const text = (await targetElement.innerText()).replace(/\n/g, ' ').trim();
-                this.logger.warn(`[Browser] 检测到应用休眠弹窗，内容: [${text}]`);
-                this.logger.info('[Browser] 正在执行唤醒操作...');
-
-                // --- C. 连点统计逻辑 ---
-                let clickCount = 0;
-                let isDismissed = false;
-
-                for (let i = 1; i <= 30; i++) {
-                    // 1. 检查是否已消失
-                    if (!await targetElement.isVisible({ timeout: 50 })) {
-                        isDismissed = true;
-                        break;
-                    }
-
-                    try {
-                        // 2. 执行点击
-                        await targetElement.click({ force: true, noWaitAfter: true, timeout: 500 });
-                        clickCount++;
-                    } catch (err) { 
-                        // 点击报错通常意味着元素在点击瞬间消失了，视为成功
-                        isDismissed = true;
-                        break; 
-                    }
-                    
-                    // 间隔 100ms
-                    await this.page.waitForTimeout(100);
-                }
-                
-                // --- D. 输出结果 ---
-                if (isDismissed) {
-                    this.logger.info(`[Browser] ✅ 唤醒成功！弹窗已消失 (共点击 ${clickCount} 次)。`);
-                } else {
-                    this.logger.warn(`[Browser] ⚠️ 已尝试点击 ${clickCount} 次，但弹窗可能仍存在，进入冷却期。`);
-                }
-                
-                // 强制冷却 3 秒
-                await this.page.waitForTimeout(3000);
-
-            } else {
-                // 未检测到休眠，常规等待 2 秒
-                await this.page.waitForTimeout(2000);
-            }
-
-        } catch (e) {
-            // 捕获页面关闭或其他意外错误
-            if (this.page && this.page.isClosed()) break;
-            await this.page.waitForTimeout(2000); 
-        }
+// ===================================================================================
+// [修复] 后台常驻唤醒守护 (增强版 - 完善空指针检查)
+// ===================================================================================
+async _startBackgroundWakeup() {
+  // 1. 初始缓冲
+  await new Promise(r => setTimeout(r, 2000));
+  
+  // 增强的页面有效性检查
+  const isPageValid = () => {
+    try {
+      return this.page && 
+             !this.page.isClosed() && 
+             this.browser && 
+             this.browser.isConnected();
+    } catch (e) {
+      return false;
     }
-    
-    this.logger.info('[Browser] (后台任务) 页面已关闭，唤醒守护进程停止。');
+  };
+
+  if (!isPageValid()) {
+    this.logger.warn('[Browser] (后台任务) 页面无效，守护进程已取消启动');
+    return;
   }
+
+  this.logger.info('[Browser] (后台任务) 唤醒守护进程已启动');
+
+  // 2. 无限循环守护
+  while (isPageValid()) {
+    try {
+      // --- A. 顺手清理干扰 (Got it) ---
+      try {
+        if (!isPageValid()) break;
+        
+        const gotIt = this.page.locator('button:has-text("Got it")').first();
+        if (await gotIt.isVisible({ timeout: 50 })) {
+          await gotIt.click({ force: true });
+        }
+        
+        if (!isPageValid()) break;
+        await this.page.evaluate(() => 
+          document.querySelectorAll('.cdk-overlay-backdrop').forEach(el => el.remove())
+        ).catch(() => {});
+      } catch (e) {
+        if (!isPageValid()) break;
+      }
+
+      // --- B. 核心查找逻辑 ---
+      if (!isPageValid()) break;
+      
+      const targetElement = this.page.locator('.interaction-modal p')
+        .filter({ hasText: 'rocket_launch' }) 
+        .filter({ hasText: /Launch/i })       
+        .first();
+
+      // 检测是否存在且可见
+      if (await targetElement.isVisible({ timeout: 500 }).catch(() => false)) {
+        if (!isPageValid()) break;
+        
+        const text = await targetElement.innerText().catch(() => '');
+        this.logger.warn(`[Browser] 检测到应用休眠弹窗，内容: [${text.replace(/\n/g, ' ').trim()}]`);
+        this.logger.info('[Browser] 正在执行唤醒操作...');
+
+        // --- C. 连点统计逻辑 ---
+        let clickCount = 0;
+        let isDismissed = false;
+
+        for (let i = 1; i <= 30; i++) {
+          if (!isPageValid()) {
+            isDismissed = true;
+            break;
+          }
+
+          // 检查是否已消失
+          const stillVisible = await targetElement.isVisible({ timeout: 50 }).catch(() => false);
+          if (!stillVisible) {
+            isDismissed = true;
+            break;
+          }
+
+          try {
+            if (!isPageValid()) {
+              isDismissed = true;
+              break;
+            }
+            await targetElement.click({ force: true, noWaitAfter: true, timeout: 500 });
+            clickCount++;
+          } catch (err) { 
+            isDismissed = true;
+            break; 
+          }
+          
+          // 安全的延时
+          if (!isPageValid()) break;
+          await this.page.waitForTimeout(100).catch(() => {});
+        }
+        
+        // --- D. 输出结果 ---
+        if (isDismissed) {
+          this.logger.info(`[Browser] ✅ 唤醒成功！弹窗已消失 (共点击 ${clickCount} 次)。`);
+        } else {
+          this.logger.warn(`[Browser] ⚠️ 已尝试点击 ${clickCount} 次,但弹窗可能仍存在,进入冷却期。`);
+        }
+        
+        // 强制冷却 3 秒
+        if (!isPageValid()) break;
+        await this.page.waitForTimeout(3000).catch(() => {});
+
+      } else {
+        // 未检测到休眠，常规等待 2 秒
+        if (!isPageValid()) break;
+        await this.page.waitForTimeout(2000).catch(() => {});
+      }
+
+    } catch (e) {
+      // 捕获页面关闭或其他意外错误
+      if (!isPageValid()) break;
+      
+      // 记录非预期错误
+      this.logger.debug(`[Browser] (后台任务) 捕获异常: ${e.message}`);
+      
+      // 安全延时后继续
+      try {
+        if (isPageValid()) {
+          await this.page.waitForTimeout(2000);
+        }
+      } catch (innerError) {
+        break;
+      }
+    }
+  }
+  
+  this.logger.info('[Browser] (后台任务) 页面已关闭或浏览器已断开,唤醒守护进程停止。');
+}
 }
 // ===================================================================================
 // PROXY SERVER MODULE
